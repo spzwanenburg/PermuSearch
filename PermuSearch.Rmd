@@ -1,0 +1,120 @@
+---
+title: "PermuSearch"
+author: "Sander"
+date: "2023-08-23"
+input: key.txt and a named excel input file, named in below
+output: temp xlsx document that opens
+version: 1, based on v3 of metheo time.
+  - this is the most versatile code yet, can take any combo of topic/topic/year/journal combo
+  - fixed order of query.
+  - writes to both df and wb, able to write to input file
+  - ignored doc type analysis (separate file)
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#set up files: have a file named key.txt in your working directory with bare api key in it, nothing else.
+#set file name for each run here:
+filename<-""    #enter filename here
+#require all packages
+require(xml2) #e.g. url escape
+require(httr) #eg get
+require(openxlsx)
+#functions one to assemble urls, one called howmany to extract data from response.
+whichurl <- function(here,ftopic,xterm,yterm,article,when,api,key){
+  if(api){
+    return(paste0("https://api.elsevier.com/content/search/scopus?query=",
+                    here,ftopic,xterm,yterm,article,when,key))
+  }
+  else{
+    return(paste0("https://www.scopus.com/results/results.uri?sort=plf-f&src=s&sot=a&s=",
+                    here,ftopic,xterm,yterm,article,when))
+  }
+}
+howmany <- function(searchurl) {
+  geturl<-GET(searchurl, accept("application/json"))
+  return(content(geturl)[["search-results"]][["opensearch:totalResults"]])
+}
+#setup search parameters from input files
+  key<-scan(file="key.txt", what = character(),nmax=1)
+  key<-paste0("&apiKey=",key)
+  wb<-loadWorkbook(filename, isUnzipped = FALSE)
+  topic.list1<-read.xlsx(filename,"topic.list1")
+  topic.list2<-read.xlsx(filename,"topic.list2")
+  years<-read.xlsx(filename,"years")
+  journals<-read.xlsx(filename,"journals")
+  journals<-journals[journals$`included?`=="yes",]
+  parameters<-read.xlsx(filename,"parameters")
+  #set values
+  dimx<-parameters[which(parameters$setting=="x dimension"),"value"]
+  dimy<-parameters[which(parameters$setting=="y dimension"),"value"]
+  documents<-parameters[which(parameters$setting=="documents"),"value"]
+  #setting constraints
+  if (documents=="articles"){
+    article<-"DOCTYPE(AR)"
+  } else if (documents=="articles or conference papers"){
+    article<-"(DOCTYPE(AR)%20OR%20DOCTYPE(CP))"
+  } else if (documents=="all document types"){
+    article<-""
+  } else {
+    abort(message = "document setting value is not recognized")
+  }
+  after<-parameters[which(parameters$setting=="after year"),"value"]
+  if(dimx=="years"|dimy=="years"){
+    then<-""
+  } else if (!is.na(after)){
+    then<-paste0("PUBYEAR%20AFT%20",as.character(after))
+  } else{ then<-"PUBYEAR%20AFT%201992" }
+  if(dimx!="journals"&&dimy!="journals"){
+    if(parameters[which(parameters$setting=="journals"),"value"]=="unconstrained"){
+      here<-""
+    } else {here<-url_escape(paste(journals[1:nrow(journals),"search.term"],collapse=" OR "))}
+  } else{ here<-""}
+  if(dimx!="topic.list1"&&dimy!="topic.list1"&&dimx!="topic.list2"&&dimy!="topic.list2"){
+    ftopic<-url_escape(parameters[which(parameters$setting=="fixed topic"),"value"])
+  } else{ ftopic<-"" }
+  #setting constraints is done.
+  #execute set up; results is df in r. 
+  results<-data.frame(matrix(ncol = 1+nrow(get(as.name(dimx))),nrow = 1+nrow(get(as.name(dimy)))))
+  setNames(data.frame(matrix(ncol = 3, nrow = 0)), c("name", "age", "gender"))
+  colnames(results)<-c("unconstrained",get(as.name(dimx))$label)
+  rownames(results)<-c("unconstrained",get(as.name(dimy))$label)
+  writeData(wb, sheet = "results", x = results, startCol = 1, startRow = 1, colNames=TRUE, rowNames=TRUE)
+  resultvalue<-"url to insert here"
+  names(resultvalue)<-999
+  class(resultvalue)<-"hyperlink"
+  for(x in 0:(ncol(results)-1)){
+    for(y in 0:(nrow(results)-1)){
+      if(x==0){
+        xvalue<-""
+      } else { 
+        xvalue<-url_escape(get(as.name(dimx))[x,"search.term"]) 
+      }
+      if(y==0){
+        yvalue<-""
+      } else { 
+        yvalue<-url_escape(get(as.name(dimy))[y,"search.term"]) 
+      }
+      #if dimx or dimy is years, we must change the order of terms because scopus is picky on order.
+      if(dimx=="years"){
+        searchurl<-whichurl(here,ftopic,yvalue,article,xvalue,then,TRUE,key)
+        resultvalue<-whichurl(here,ftopic,yvalue,article,xvalue,then,FALSE,key)
+      } else if (dimy=="years"){
+        searchurl<-whichurl(here,ftopic,xvalue,article,yvalue,then,TRUE,key)
+        resultvalue<-whichurl(here,ftopic,xvalue,article,yvalue,then,FALSE,key)
+      } else {
+        searchurl<-whichurl(here,ftopic,xvalue,yvalue,article,then,TRUE,key)
+        resultvalue<-whichurl(here,ftopic,xvalue,yvalue,article,then,FALSE,key) 
+      }
+      numResults<-as.numeric(howmany(searchurl))
+      names(resultvalue)<-as.numeric(numResults)
+      class(resultvalue)<-"hyperlink"
+      results[y+1,x+1]<-numResults
+      writeData(wb, sheet = "results", x = resultvalue, startCol = 2+x, startRow = 2+y)
+      print(paste0("x: ",xvalue,"; y: ",yvalue,"; Number of results: ",numResults))
+      Sys.sleep(0.1)
+    }
+  }
+openXL(wb) #opens temporary file
+#saveWorkbook(wb,filename,overwrite=TRUE) #overwrites excel file
+```
